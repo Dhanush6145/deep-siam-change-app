@@ -2,4 +2,5 @@ streamlit
 torch
 torchvision
 pillow
-gdown
+numpy
+requests
