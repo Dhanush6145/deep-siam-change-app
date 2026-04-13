@@ -5,8 +5,8 @@ import gdown
 import numpy as np
 from PIL import Image
 import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 
-# ✅ Import your correct model class
 from models.model import SiameseChangeNet
 
 # -------------------------
@@ -27,34 +27,22 @@ def download_model():
         gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
 
 # -------------------------
-# LOAD MODEL (ROBUST)
+# LOAD MODEL
 # -------------------------
 @st.cache_resource
 def load_model():
     download_model()
 
-    try:
-        # ✅ Load as state_dict
-        model = SiameseChangeNet()
-        state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
-        model.load_state_dict(state_dict)
-        model.to(DEVICE)
-        model.eval()
-        return model
+    model = SiameseChangeNet()
+    state_dict = torch.load(MODEL_PATH, map_location=DEVICE)
+    model.load_state_dict(state_dict)
 
-    except Exception:
-        st.warning("⚠️ Trying fallback model loading...")
-
-        try:
-            model = torch.load(MODEL_PATH, map_location=DEVICE)
-            model.eval()
-            return model
-        except Exception as e:
-            st.error(f"❌ Model loading failed:\n{e}")
-            st.stop()
+    model.to(DEVICE)
+    model.eval()
+    return model
 
 # -------------------------
-# IMAGE TRANSFORM (FIXED)
+# TRANSFORM (IMPORTANT FIX)
 # -------------------------
 transform = transforms.Compose([
     transforms.Resize((256, 256)),
@@ -66,7 +54,7 @@ transform = transforms.Compose([
 ])
 
 # -------------------------
-# PREDICT FUNCTION (FIXED)
+# PREDICTION
 # -------------------------
 def predict(model, img1, img2):
     t1 = transform(img1).unsqueeze(0).to(DEVICE)
@@ -78,47 +66,42 @@ def predict(model, img1, img2):
 
     output = output.squeeze().cpu().numpy()
 
-    # ✅ Debug values
+    # DEBUG VALUES
     min_val, max_val = output.min(), output.max()
 
-    # ✅ Binary threshold
-    binary = (output > 0.5).astype("float32")
+    # LOWER THRESHOLD (important)
+    binary = (output > 0.3).astype("float32")
 
     return output, binary, min_val, max_val
 
 # -------------------------
 # UI
 # -------------------------
-st.set_page_config(page_title="Deep Siam Change Detection")
-
 st.title("🧠 Deep Siam Change Detection")
 
 model = load_model()
 
-# Upload images
-file1 = st.file_uploader("📤 Upload Image 1", type=["jpg", "png", "jpeg"])
-file2 = st.file_uploader("📤 Upload Image 2", type=["jpg", "png", "jpeg"])
+file1 = st.file_uploader("Upload Image 1", type=["jpg", "png"])
+file2 = st.file_uploader("Upload Image 2", type=["jpg", "png"])
 
 if file1 and file2:
     img1 = Image.open(file1).convert("RGB")
     img2 = Image.open(file2).convert("RGB")
 
-    st.image([img1, img2], caption=["Image 1", "Image 2"], use_container_width=True)
+    st.image([img1, img2], caption=["Image 1", "Image 2"])
 
-    if st.button("🔍 Predict Change"):
-
+    if st.button("Predict Change"):
         raw, binary, min_val, max_val = predict(model, img1, img2)
 
-        st.subheader("📊 Debug Info")
-        st.write(f"Min Value: {min_val:.4f}")
-        st.write(f"Max Value: {max_val:.4f}")
+        st.write(f"Min: {min_val:.4f}, Max: {max_val:.4f}")
 
-        # -------------------------
-        # OUTPUTS
-        # -------------------------
+        # HEATMAP
+        st.subheader("🔥 Heatmap")
+        fig, ax = plt.subplots()
+        ax.imshow(raw, cmap="jet")
+        ax.axis("off")
+        st.pyplot(fig)
 
-        st.subheader("🔥 Heatmap (Raw Output)")
-        st.image(raw, use_container_width=True)
-
-        st.subheader("✅ Binary Change Map")
-        st.image(binary * 255, use_container_width=True)
+        # BINARY MAP
+        st.subheader("✅ Change Map")
+        st.image(binary, clamp=True)
