@@ -1,120 +1,82 @@
 import torch
-from torch.utils.data import DataLoader
-from dataset import LEVIRDataset
+import torch.nn as nn
+import torch.optim as optim
+from dataset import ChangeDataset
 from models.model import SiameseChangeNet
-from loss import hybrid_loss
-from metrics import get_metrics
-from tqdm import tqdm
-import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-print("Using device:", device)
+# -------------------------
+# TRANSFORM (FIXED)
+# -------------------------
+transform = transforms.Compose([
+    transforms.Resize((256, 256)),
+    transforms.ToTensor(),
+    transforms.Normalize(
+        mean=[0.485,0.456,0.406],
+        std=[0.229,0.224,0.225]
+    )
+])
 
-# Dataset
-train_dataset = LEVIRDataset("data/train")
-val_dataset = LEVIRDataset("data/val")
+# -------------------------
+# DATA
+# -------------------------
+train_dataset = ChangeDataset("data/train", transform=transform)
+val_dataset = ChangeDataset("data/val", transform=transform)
 
-train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-val_loader = DataLoader(val_dataset, batch_size=4)
+train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True)
+val_loader = DataLoader(val_dataset, batch_size=8)
 
-# Model
-model = SiameseChangeNet().to(device)
+# -------------------------
+# MODEL
+# -------------------------
+model = SiameseChangeNet().to(DEVICE)
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=20)
+# -------------------------
+# LOSS (UPGRADED)
+# -------------------------
+bce = nn.BCEWithLogitsLoss()
 
-epochs = 150   # YOU CONTROL HERE
-print("TOTAL EPOCHS:", epochs)
+def dice_loss(pred, target):
+    pred = torch.sigmoid(pred)
+    smooth = 1.0
+    intersection = (pred * target).sum()
+    return 1 - ((2. * intersection + smooth) /
+                (pred.sum() + target.sum() + smooth))
 
-best_f1 = 0
+def loss_fn(pred, target):
+    return bce(pred, target) + dice_loss(pred, target)
 
-train_losses = []
-val_losses = []
-f1_scores = []
+# -------------------------
+# OPTIMIZER
+# -------------------------
+optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-for epoch in range(epochs):
+# -------------------------
+# TRAIN LOOP
+# -------------------------
+EPOCHS = 20
 
-    # TRAIN
+for epoch in range(EPOCHS):
     model.train()
     total_loss = 0
 
-    loop = tqdm(train_loader)
+    for img1, img2, label in train_loader:
+        img1, img2, label = img1.to(DEVICE), img2.to(DEVICE), label.to(DEVICE)
 
-    for imgA, imgB, label in loop:
-        imgA, imgB, label = imgA.to(device), imgB.to(device), label.to(device)
+        output = model(img1, img2)
+        loss = loss_fn(output, label)
 
         optimizer.zero_grad()
-
-        pred = model(imgA, imgB)
-
-        # FIX SIZE MISMATCH
-        pred = torch.nn.functional.interpolate(
-            pred, size=label.shape[2:], mode='bilinear', align_corners=False
-        )
-
-        loss = hybrid_loss(pred, label)
-
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
 
-        loop.set_description(f"Epoch [{epoch+1}/{epochs}]")
-        loop.set_postfix(loss=loss.item())
+    print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
 
-    train_loss = total_loss / len(train_loader)
-    train_losses.append(train_loss)
-
-    # VALIDATION
-    model.eval()
-    val_loss = 0
-    total_f1 = 0
-
-    with torch.no_grad():
-        for imgA, imgB, label in val_loader:
-            imgA, imgB, label = imgA.to(device), imgB.to(device), label.to(device)
-
-            pred = model(imgA, imgB)
-
-            pred = torch.nn.functional.interpolate(
-                pred, size=label.shape[2:], mode='bilinear', align_corners=False
-            )
-
-            loss = hybrid_loss(pred, label)
-            val_loss += loss.item()
-
-            _, _, f1, _ = get_metrics(pred, label)
-            total_f1 += f1
-
-    val_loss /= len(val_loader)
-    avg_f1 = total_f1 / len(val_loader)
-
-    val_losses.append(val_loss)
-    f1_scores.append(avg_f1)
-
-    scheduler.step()
-
-    print(f"\nEpoch {epoch+1}")
-    print(f"Train Loss: {train_loss:.4f}")
-    print(f"Val Loss: {val_loss:.4f}")
-    print(f"F1 Score: {avg_f1:.4f}")
-
-    if avg_f1 > best_f1:
-        best_f1 = avg_f1
-        torch.save(model.state_dict(), "best_model.pth")
-        print("Best model saved!")
-
-# PLOTS
-plt.figure()
-plt.plot(train_losses, label="Train Loss")
-plt.plot(val_losses, label="Val Loss")
-plt.legend()
-plt.savefig("loss.png")
-
-plt.figure()
-plt.plot(f1_scores, label="F1 Score")
-plt.legend()
-plt.savefig("f1.png")
-
-print("Training Completed")
+# SAVE MODEL
+torch.save(model.state_dict(), "model.pth")
+print("Model saved!")
